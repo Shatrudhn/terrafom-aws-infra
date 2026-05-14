@@ -1,24 +1,43 @@
+# EXISTING VPC
 data "aws_vpc" "existing" {
   id = "vpc-081d12cf7965deaca"
 }
 
+# EXISTING INTERNET GATEWAY
+data "aws_internet_gateway" "existing" {
+  internet_gateway_id = "igw-03f7718c9ce267f65"
+}
+
+# AVAILABILITY ZONES
 data "aws_availability_zones" "available" {}
 
-# PUBLIC SUBNETS (2 AZ)
+# UBUNTU AMI
+data "aws_ami" "ubuntu" {
+  most_recent = true
+
+  owners = ["099720109477"]
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-*-amd64-server-*"]
+  }
+}
+
+# PUBLIC SUBNETS
 resource "aws_subnet" "public" {
   count = 2
 
   vpc_id                  = data.aws_vpc.existing.id
   cidr_block              = element(["192.168.10.0/24", "192.168.11.0/24"], count.index)
-  map_public_ip_on_launch = true
   availability_zone       = data.aws_availability_zones.available.names[count.index]
+  map_public_ip_on_launch = true
 
   tags = {
     Name = "taxsutra-public-${count.index + 1}"
   }
 }
 
-# PRIVATE SUBNETS (2 AZ)
+# PRIVATE SUBNETS
 resource "aws_subnet" "private" {
   count = 2
 
@@ -31,39 +50,48 @@ resource "aws_subnet" "private" {
   }
 }
 
-# IGW
-resource "aws_internet_gateway" "igw" {
-  vpc_id = data.aws_vpc.existing.id
-}
-
-# NAT
+# ELASTIC IP
 resource "aws_eip" "nat_eip" {
   domain = "vpc"
+
+  tags = {
+    Name = "taxsutra-nat-eip"
+  }
 }
 
+# NAT GATEWAY
 resource "aws_nat_gateway" "nat" {
   allocation_id = aws_eip.nat_eip.id
   subnet_id     = aws_subnet.public[0].id
 
-  depends_on = [aws_internet_gateway.igw]
+  tags = {
+    Name = "taxsutra-nat"
+  }
 }
 
-# ROUTES
+# PUBLIC ROUTE TABLE
 resource "aws_route_table" "public_rt" {
   vpc_id = data.aws_vpc.existing.id
 
   route {
     cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.igw.id
+    gateway_id = data.aws_internet_gateway.existing.id
+  }
+
+  tags = {
+    Name = "taxsutra-public-rt"
   }
 }
 
+# PUBLIC ROUTE ASSOCIATION
 resource "aws_route_table_association" "public_assoc" {
-  count          = 2
+  count = 2
+
   subnet_id      = aws_subnet.public[count.index].id
   route_table_id = aws_route_table.public_rt.id
 }
 
+# PRIVATE ROUTE TABLE
 resource "aws_route_table" "private_rt" {
   vpc_id = data.aws_vpc.existing.id
 
@@ -71,120 +99,294 @@ resource "aws_route_table" "private_rt" {
     cidr_block     = "0.0.0.0/0"
     nat_gateway_id = aws_nat_gateway.nat.id
   }
+
+  tags = {
+    Name = "taxsutra-private-rt"
+  }
 }
 
+# PRIVATE ROUTE ASSOCIATION
 resource "aws_route_table_association" "private_assoc" {
-  count          = 2
+  count = 2
+
   subnet_id      = aws_subnet.private[count.index].id
   route_table_id = aws_route_table.private_rt.id
 }
 
-# SG
+# APPLICATION SECURITY GROUP
 resource "aws_security_group" "app_sg" {
+  name   = "taxsutra-app-sg"
   vpc_id = data.aws_vpc.existing.id
 
   ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
+    description = "HTTP"
+
+    from_port = 80
+    to_port   = 80
+    protocol  = "tcp"
+
     cidr_blocks = ["0.0.0.0/0"]
   }
 
   ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
+    description = "SSH"
+
+    from_port = 22
+    to_port   = 22
+    protocol  = "tcp"
+
+    # CHANGE THIS TO YOUR PUBLIC IP
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Memcache"
+
+    from_port = 11211
+    to_port   = 11211
+    protocol  = "tcp"
+
+    cidr_blocks = ["192.168.0.0/16"]
+  }
+
+  ingress {
+    description = "Elasticsearch"
+
+    from_port = 9200
+    to_port   = 9200
+    protocol  = "tcp"
+
+    cidr_blocks = ["192.168.0.0/16"]
   }
 
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+    from_port = 0
+    to_port   = 0
+    protocol  = "-1"
+
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "taxsutra-app-sg"
   }
 }
 
-# AMI
-data "aws_ami" "ubuntu" {
-  most_recent = true
-  owners      = ["099720109477"]
+# EFS SECURITY GROUP
+resource "aws_security_group" "efs_sg" {
+  name   = "taxsutra-efs-sg"
+  vpc_id = data.aws_vpc.existing.id
 
-  filter {
-    name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-*-amd64-server-*"]
+  ingress {
+    description = "NFS"
+
+    from_port = 2049
+    to_port   = 2049
+    protocol  = "tcp"
+
+    security_groups = [
+      aws_security_group.app_sg.id
+    ]
+  }
+
+  egress {
+    from_port = 0
+    to_port   = 0
+    protocol  = "-1"
+
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "taxsutra-efs-sg"
+  }
+}
+
+# EFS FILE SYSTEM
+resource "aws_efs_file_system" "efs" {
+  creation_token = "taxsutra-efs"
+
+  performance_mode = "generalPurpose"
+  throughput_mode  = "bursting"
+
+  encrypted = true
+
+  lifecycle_policy {
+    transition_to_ia = "AFTER_30_DAYS"
+  }
+
+  tags = {
+    Name = "taxsutra-efs"
+  }
+}
+
+# EFS MOUNT TARGETS
+resource "aws_efs_mount_target" "efs_mt" {
+  count = 2
+
+  file_system_id = aws_efs_file_system.efs.id
+  subnet_id      = aws_subnet.private[count.index].id
+
+  security_groups = [
+    aws_security_group.efs_sg.id
+  ]
+}
+
+# EFS BACKUP POLICY
+resource "aws_efs_backup_policy" "policy" {
+  file_system_id = aws_efs_file_system.efs.id
+
+  backup_policy {
+    status = "ENABLED"
   }
 }
 
 # APP INSTANCES
 resource "aws_instance" "app" {
-  count         = 3
-  ami           = data.aws_ami.ubuntu.id
-  instance_type = "t3.small"
+    count = 3
 
-  subnet_id = aws_subnet.private[count.index % 2].id
+      ami           = data.aws_ami.ubuntu.id
+        instance_type = "t3.small"
 
-  vpc_security_group_ids = [aws_security_group.app_sg.id]
+          key_name = "taxsutra-test-key-01"
 
-  tags = {
-    Name = "taxsutra-test-app-${count.index + 1}"
-  }
-}
+            subnet_id = aws_subnet.private[count.index % 2].id
 
-# MEMCACHE
+              vpc_security_group_ids = [
+                    aws_security_group.app_sg.id
+                      ]
+
+                        user_data = templatefile("${path.module}/scripts/app.sh", {
+                              efs_dns = aws_efs_file_system.efs.dns_name
+                                })
+
+                                  user_data_replace_on_change = true
+
+                                    root_block_device {
+                                          volume_size = 20
+                                              volume_type = "gp3"
+                                                }
+
+                                                  tags = {
+                                                        Name = "taxsutra-test-app-${count.index + 1}"
+                                                          }
+                                                        }
+
+
+# MEMCACHE INSTANCE
 resource "aws_instance" "memcache" {
-  ami           = data.aws_ami.ubuntu.id
-  instance_type = "t3.small"
+    ami           = data.aws_ami.ubuntu.id
+      instance_type = "t3.small"
 
-  subnet_id = aws_subnet.private[0].id
+        key_name = "taxsutra-test-key-01"
 
-  vpc_security_group_ids = [aws_security_group.app_sg.id]
+          subnet_id = aws_subnet.private[0].id
 
-  tags = {
-    Name = "taxsutra-test-memcache-01"
-  }
-}
+            vpc_security_group_ids = [
+                  aws_security_group.app_sg.id
+                    ]
 
-# ES
+                      user_data = file("${path.module}/scripts/memcache.sh")
+
+                        user_data_replace_on_change = true
+
+                          root_block_device {
+                                volume_size = 20
+                                    volume_type = "gp3"
+                                      }
+
+                                        tags = {
+                                              Name = "taxsutra-test-memcache-01"
+                                                }
+                                              }
+
+# ELASTICSEARCH INSTANCE
 resource "aws_instance" "es" {
-  ami           = data.aws_ami.ubuntu.id
-  instance_type = "t3.small"
+    ami           = data.aws_ami.ubuntu.id
+      instance_type = "t3.small"
 
-  subnet_id = aws_subnet.private[1].id
+        key_name = "taxsutra-test-key-01"
 
-  vpc_security_group_ids = [aws_security_group.app_sg.id]
+          subnet_id = aws_subnet.private[1].id
 
-  tags = {
-    Name = "taxsutra-test-elasticsearch-01"
-  }
-}
+            vpc_security_group_ids = [
+                  aws_security_group.app_sg.id
+                    ]
 
-# ALB
+                      user_data = file("${path.module}/scripts/elasticsearch.sh")
+
+                        user_data_replace_on_change = true
+
+                          root_block_device {
+                                volume_size = 20
+                                    volume_type = "gp3"
+                                      }
+
+                                        tags = {
+                                              Name = "taxsutra-test-elasticsearch-01"
+                                                }
+                                              }
+
+
+# APPLICATION LOAD BALANCER
 resource "aws_lb" "alb" {
   name               = "taxsutra-alb"
   load_balancer_type = "application"
-  subnets            = aws_subnet.public[*].id
-  security_groups    = [aws_security_group.app_sg.id]
+
+  subnets = aws_subnet.public[*].id
+
+  security_groups = [
+    aws_security_group.app_sg.id
+  ]
+
+  tags = {
+    Name = "taxsutra-alb"
+  }
 }
 
-# TG
+# TARGET GROUP
 resource "aws_lb_target_group" "tg" {
+  name = "taxsutra-tg"
+
   port     = 80
   protocol = "HTTP"
-  vpc_id   = data.aws_vpc.existing.id
+
+  vpc_id = data.aws_vpc.existing.id
+
+  health_check {
+    enabled = true
+
+    path     = "/"
+    protocol = "HTTP"
+    matcher  = "200"
+
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+
+  tags = {
+    Name = "taxsutra-tg"
+  }
 }
 
-# ATTACH
+# TARGET GROUP ATTACHMENTS
 resource "aws_lb_target_group_attachment" "app_attach" {
-  count            = 3
+  count = 3
+
   target_group_arn = aws_lb_target_group.tg.arn
   target_id        = aws_instance.app[count.index].id
+
+  port = 80
 }
 
-# LISTENER
+# ALB LISTENER
 resource "aws_lb_listener" "listener" {
   load_balancer_arn = aws_lb.alb.arn
-  port              = 80
+
+  port     = 80
+  protocol = "HTTP"
 
   default_action {
     type             = "forward"
