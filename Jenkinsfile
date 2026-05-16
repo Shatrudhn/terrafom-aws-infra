@@ -21,6 +21,15 @@ pipeline {
             }
         }
 
+                stage('Verify AWS Access') {
+            steps {
+                withAWS(credentials: 'aws-creds', region: 'ap-south-1') {
+                    sh 'aws sts get-caller-identity'
+                }
+            }
+        }
+
+
         stage('Terraform Init') {
             steps {
                 sh '''
