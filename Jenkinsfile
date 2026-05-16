@@ -84,6 +84,7 @@ pipeline {
             }
         }
 
+        /*
         stage('Composer Install') {
 
             steps {
@@ -107,6 +108,7 @@ pipeline {
                 '''
             }
         }
+        */
 
         stage('Prepare Release Structure') {
 
@@ -278,6 +280,7 @@ pipeline {
             }
         }
 
+        /*
         stage('Drupal Cache Rebuild') {
 
             steps {
@@ -305,7 +308,8 @@ pipeline {
                 }
             }
         }
-
+        /*
+        
         stage('Local Application Validation') {
 
             steps {
