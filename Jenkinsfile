@@ -1,6 +1,10 @@
 pipeline {
     agent any
 
+    environment {
+        APP_SERVER = "192.168.20.50"
+    }
+
     stages {
 
         stage('Checkout') {
@@ -11,10 +15,19 @@ pipeline {
             }
         }
 
-        stage('Test') {
+        stage('SSH Test') {
             steps {
-                sh 'pwd'
-                sh 'ls -ltr'
+
+                sshagent(credentials: ['app-server-key']) {
+
+                    sh '''
+                    ssh -o StrictHostKeyChecking=no ubuntu@$APP_SERVER "
+                        hostname;
+                        uptime;
+                        df -h
+                    "
+                    '''
+                }
             }
         }
     }
