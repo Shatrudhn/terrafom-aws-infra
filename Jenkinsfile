@@ -1,23 +1,27 @@
 pipeline {
+
     agent any
 
     environment {
 
-        // Deployment Node
+        // Deploy Node
         DEPLOY_NODE = "192.168.20.50"
 
-        // All App Servers
+        // App Servers
         APP1 = "192.168.20.50"
         APP2 = "192.168.21.139"
         APP3 = "192.168.20.155"
 
         // Deployment Paths
         BASE_PATH = "/var/www/production-taxsutra"
+
         RELEASES_PATH = "/var/www/production-taxsutra/releases"
+
         CURRENT_PATH = "/var/www/production-taxsutra/current"
+
         SHARED_PATH = "/var/www/production-taxsutra/shared"
 
-        // Build Release
+        // Release Number
         RELEASE = "${BUILD_NUMBER}"
     }
 
@@ -33,30 +37,7 @@ pipeline {
             }
         }
 
-        stage('SSH Test - Deploy Node') {
-
-            steps {
-
-                sshagent(credentials: ['app-server-key']) {
-
-                    sh '''
-                    ssh -o StrictHostKeyChecking=no ubuntu@$DEPLOY_NODE "
-
-                        echo '===== DEPLOY NODE ====='
-
-                        hostname
-
-                        uptime
-
-                        df -h
-
-                    "
-                    '''
-                }
-            }
-        }
-
-        stage('Validate All App Servers') {
+        stage('Validate App Servers') {
 
             steps {
 
@@ -98,7 +79,7 @@ pipeline {
             }
         }
 
-        stage('Create Release Directory') {
+        stage('Create Release Structure') {
 
             steps {
 
@@ -113,9 +94,9 @@ pipeline {
 
                         mkdir -p ${SHARED_PATH}/sites
 
-                        echo 'Release Directory Created'
+                        echo '===== Deployment Structure ====='
 
-                        ls -ltr ${RELEASES_PATH}
+                        tree -L 2 ${BASE_PATH}
 
                     "
                     '''
@@ -131,11 +112,12 @@ pipeline {
 
                     sh '''
                     rsync -avz \
+                    --delete \
                     --exclude=.git \
                     --exclude=.terraform \
+                    --exclude=.terraform.lock.hcl \
                     --exclude=terraform.tfstate \
                     --exclude=terraform.tfstate.backup \
-                    --exclude=.terraform.lock.hcl \
                     -e "ssh -o StrictHostKeyChecking=no" \
                     ./ \
                     ubuntu@$DEPLOY_NODE:${RELEASES_PATH}/${RELEASE}/
@@ -153,7 +135,7 @@ pipeline {
                     sh '''
                     ssh -o StrictHostKeyChecking=no ubuntu@$DEPLOY_NODE "
 
-                        echo '===== Uploaded Release ====='
+                        echo '===== Uploaded Files ====='
 
                         ls -ltr ${RELEASES_PATH}/${RELEASE}
 
@@ -171,6 +153,8 @@ pipeline {
 
                     sh '''
                     ssh -o StrictHostKeyChecking=no ubuntu@$DEPLOY_NODE "
+
+                        rm -rf ${CURRENT_PATH}
 
                         ln -sfn \
                         ${RELEASES_PATH}/${RELEASE} \
@@ -195,9 +179,50 @@ pipeline {
                     sh '''
                     ssh -o StrictHostKeyChecking=no ubuntu@$DEPLOY_NODE "
 
-                        readlink -f ${CURRENT_PATH}
+                        echo '===== Current Symlink ====='
+
+                        ls -ltr ${CURRENT_PATH}
 
                     "
+                    '''
+                }
+            }
+        }
+
+        stage('Validate All App Servers After Deployment') {
+
+            steps {
+
+                sshagent(credentials: ['app-server-key']) {
+
+                    sh '''
+                    for server in \
+                    $APP1 \
+                    $APP2 \
+                    $APP3
+                    do
+
+                        echo "======================================"
+                        echo "Deployment Validation On: $server"
+                        echo "======================================"
+
+                        ssh -o StrictHostKeyChecking=no ubuntu@$server "
+
+                            echo
+                            echo CURRENT:
+                            ls -ltr ${BASE_PATH}
+
+                            echo
+                            echo CURRENT RELEASE:
+                            ls -ltr ${CURRENT_PATH}
+
+                            echo
+                            echo EFS:
+                            findmnt | grep production-taxsutra
+
+                        "
+
+                    done
                     '''
                 }
             }
@@ -208,12 +233,12 @@ pipeline {
 
         success {
 
-            echo 'Drupal deployment pipeline validation successful'
+            echo 'Drupal deployment completed successfully'
         }
 
         failure {
 
-            echo 'Pipeline failed'
+            echo 'Drupal deployment failed'
         }
     }
 }
