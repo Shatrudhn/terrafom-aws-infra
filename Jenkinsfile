@@ -7,7 +7,7 @@ pipeline {
         // Deploy Node
         DEPLOY_NODE = "192.168.20.50"
 
-        // Application Servers
+        // App Servers
         APP1 = "192.168.20.50"
         APP2 = "192.168.21.139"
         APP3 = "192.168.20.155"
@@ -21,8 +21,20 @@ pipeline {
 
         SHARED_PATH = "/var/www/production-taxsutra/shared"
 
-        // Release Number
+        // Release Version
         RELEASE = "${BUILD_NUMBER}"
+
+        // ALB DNS
+        ALB_URL = "http://taxsutra-alb-148605757.us-east-1.elb.amazonaws.com"
+    }
+
+    options {
+
+        timestamps()
+
+        disableConcurrentBuilds()
+
+        buildDiscarder(logRotator(numToKeepStr: '10'))
     }
 
     stages {
@@ -56,19 +68,12 @@ pipeline {
 
                         ssh -o StrictHostKeyChecking=no ubuntu@$server "
 
-                            echo HOSTNAME:
                             hostname
 
-                            echo
-                            echo UPTIME:
                             uptime
 
-                            echo
-                            echo EFS:
                             findmnt | grep production-taxsutra
 
-                            echo
-                            echo DISK:
                             df -h
 
                         "
@@ -79,7 +84,31 @@ pipeline {
             }
         }
 
-        stage('Prepare Deployment Structure') {
+        stage('Composer Install') {
+
+            steps {
+
+                sh '''
+                composer install \
+                --no-dev \
+                --optimize-autoloader
+                '''
+            }
+        }
+
+        stage('Drupal Validation') {
+
+            steps {
+
+                sh '''
+                php -v
+
+                composer validate
+                '''
+            }
+        }
+
+        stage('Prepare Release Structure') {
 
             steps {
 
@@ -108,7 +137,7 @@ pipeline {
             }
         }
 
-        stage('Upload Application Code') {
+        stage('Deploy To EFS') {
 
             steps {
 
@@ -130,7 +159,7 @@ pipeline {
             }
         }
 
-        stage('Validate Uploaded Files') {
+        stage('Validate Deployment Files') {
 
             steps {
 
@@ -139,7 +168,7 @@ pipeline {
                     sh '''
                     ssh -o StrictHostKeyChecking=no ubuntu@$DEPLOY_NODE "
 
-                        echo '===== Uploaded Files ====='
+                        echo '===== Release Files ====='
 
                         ls -ltr ${RELEASES_PATH}/${RELEASE}
 
@@ -164,7 +193,7 @@ pipeline {
                         ${RELEASES_PATH}/${RELEASE} \
                         ${CURRENT_PATH}
 
-                        echo '===== Current Release ====='
+                        echo '===== Active Release ====='
 
                         ls -ltr ${BASE_PATH}
 
@@ -183,8 +212,6 @@ pipeline {
                     sh '''
                     ssh -o StrictHostKeyChecking=no ubuntu@$DEPLOY_NODE "
 
-                        echo '===== Current Symlink ====='
-
                         ls -ltr ${CURRENT_PATH}
 
                     "
@@ -193,46 +220,7 @@ pipeline {
             }
         }
 
-        stage('Validate Deployment On All Servers') {
-
-            steps {
-
-                sshagent(credentials: ['app-server-key']) {
-
-                    sh '''
-                    for server in \
-                    $APP1 \
-                    $APP2 \
-                    $APP3
-                    do
-
-                        echo "======================================"
-                        echo "Deployment Validation On: $server"
-                        echo "======================================"
-
-                        ssh -o StrictHostKeyChecking=no ubuntu@$server "
-
-                            echo
-                            echo CURRENT STRUCTURE:
-                            ls -ltr ${BASE_PATH}
-
-                            echo
-                            echo CURRENT RELEASE:
-                            ls -ltr ${CURRENT_PATH}
-
-                            echo
-                            echo EFS:
-                            findmnt | grep production-taxsutra
-
-                        "
-
-                    done
-                    '''
-                }
-            }
-        }
-
-        stage('Validate Nginx Configuration') {
+        stage('Validate nginx Configuration') {
 
             steps {
 
@@ -261,7 +249,7 @@ pipeline {
             }
         }
 
-        stage('Reload Nginx') {
+        stage('Reload nginx') {
 
             steps {
 
@@ -290,6 +278,34 @@ pipeline {
             }
         }
 
+        stage('Drupal Cache Rebuild') {
+
+            steps {
+
+                sshagent(credentials: ['app-server-key']) {
+
+                    sh '''
+                    ssh -o StrictHostKeyChecking=no ubuntu@$DEPLOY_NODE "
+
+                        cd ${CURRENT_PATH}
+
+                        if [ -f vendor/bin/drush ]
+                        then
+
+                            vendor/bin/drush cr
+
+                        else
+
+                            echo 'Drush not installed yet'
+
+                        fi
+
+                    "
+                    '''
+                }
+            }
+        }
+
         stage('Local Application Validation') {
 
             steps {
@@ -304,7 +320,7 @@ pipeline {
                     do
 
                         echo "======================================"
-                        echo "Testing Application On: $server"
+                        echo "Application Validation On: $server"
                         echo "======================================"
 
                         ssh -o StrictHostKeyChecking=no ubuntu@$server "
@@ -324,7 +340,7 @@ pipeline {
             steps {
 
                 sh '''
-                curl -I http://taxsutra-alb-148605757.us-east-1.elb.amazonaws.com
+                curl -I ${ALB_URL}
                 '''
             }
         }
@@ -334,12 +350,17 @@ pipeline {
 
         success {
 
-            echo 'Drupal deployment completed successfully'
+            echo 'Production Drupal deployment completed successfully'
         }
 
         failure {
 
-            echo 'Drupal deployment failed'
+            echo 'Production Drupal deployment failed'
+        }
+
+        always {
+
+            cleanWs()
         }
     }
 }
