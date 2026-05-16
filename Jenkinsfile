@@ -7,7 +7,7 @@ pipeline {
         // Deploy Node
         DEPLOY_NODE = "192.168.20.50"
 
-        // App Servers
+        // Application Servers
         APP1 = "192.168.20.50"
         APP2 = "192.168.21.139"
         APP3 = "192.168.20.155"
@@ -27,7 +27,7 @@ pipeline {
 
     stages {
 
-        stage('Checkout') {
+        stage('Checkout Code') {
 
             steps {
 
@@ -79,7 +79,7 @@ pipeline {
             }
         }
 
-        stage('Create Release Structure') {
+        stage('Prepare Deployment Structure') {
 
             steps {
 
@@ -93,6 +93,10 @@ pipeline {
                         mkdir -p ${SHARED_PATH}/files
 
                         mkdir -p ${SHARED_PATH}/sites
+
+                        sudo chown -R ubuntu:ubuntu ${BASE_PATH}
+
+                        sudo chmod -R 755 ${BASE_PATH}
 
                         echo '===== Deployment Structure ====='
 
@@ -189,7 +193,7 @@ pipeline {
             }
         }
 
-        stage('Validate All App Servers After Deployment') {
+        stage('Validate Deployment On All Servers') {
 
             steps {
 
@@ -209,7 +213,7 @@ pipeline {
                         ssh -o StrictHostKeyChecking=no ubuntu@$server "
 
                             echo
-                            echo CURRENT:
+                            echo CURRENT STRUCTURE:
                             ls -ltr ${BASE_PATH}
 
                             echo
@@ -225,6 +229,103 @@ pipeline {
                     done
                     '''
                 }
+            }
+        }
+
+        stage('Validate Nginx Configuration') {
+
+            steps {
+
+                sshagent(credentials: ['app-server-key']) {
+
+                    sh '''
+                    for server in \
+                    $APP1 \
+                    $APP2 \
+                    $APP3
+                    do
+
+                        echo "======================================"
+                        echo "Validating nginx on: $server"
+                        echo "======================================"
+
+                        ssh -o StrictHostKeyChecking=no ubuntu@$server "
+
+                            sudo nginx -t
+
+                        "
+
+                    done
+                    '''
+                }
+            }
+        }
+
+        stage('Reload Nginx') {
+
+            steps {
+
+                sshagent(credentials: ['app-server-key']) {
+
+                    sh '''
+                    for server in \
+                    $APP1 \
+                    $APP2 \
+                    $APP3
+                    do
+
+                        echo "======================================"
+                        echo "Reloading nginx on: $server"
+                        echo "======================================"
+
+                        ssh -o StrictHostKeyChecking=no ubuntu@$server "
+
+                            sudo systemctl reload nginx
+
+                        "
+
+                    done
+                    '''
+                }
+            }
+        }
+
+        stage('Local Application Validation') {
+
+            steps {
+
+                sshagent(credentials: ['app-server-key']) {
+
+                    sh '''
+                    for server in \
+                    $APP1 \
+                    $APP2 \
+                    $APP3
+                    do
+
+                        echo "======================================"
+                        echo "Testing Application On: $server"
+                        echo "======================================"
+
+                        ssh -o StrictHostKeyChecking=no ubuntu@$server "
+
+                            curl -I localhost
+
+                        "
+
+                    done
+                    '''
+                }
+            }
+        }
+
+        stage('ALB Health Check') {
+
+            steps {
+
+                sh '''
+                curl -I http://taxsutra-alb-148605757.us-east-1.elb.amazonaws.com
+                '''
             }
         }
     }
