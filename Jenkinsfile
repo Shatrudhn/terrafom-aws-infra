@@ -308,8 +308,8 @@ pipeline {
                 }
             }
         }
-        /*
-        
+        */
+
         stage('Local Application Validation') {
 
             steps {
